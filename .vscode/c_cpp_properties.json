@@ -1,0 +1,19 @@
+{
+  "configurations": [
+    {
+      "name": "Wii",
+      "includePath": [
+        "${workspaceFolder}/**",
+        "C:/devkitPro/libogc/include",
+        "C:/devkitPro/libogc/include/ogc",
+        "C:/GRRLIB/GRRLIB-master/GRRLIB/GRRLIB"
+      ],
+      "defines": [],
+      "compilerPath": "C:/devkitPro/devkitPPC/bin/powerpc-eabi-gcc.exe",
+      "intelliSenseMode": "${default}",
+      "cStandard": "c11",
+      "cppStandard": "c++11"
+    }
+  ],
+  "version": 4
+}
