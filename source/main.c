@@ -359,7 +359,7 @@ int main() {
                         if (keys[i].output == '\n') {
                             if (scene == 1) {
                                 char message[300];
-                                sprintf(message, "{\"cmd\":\"CHAT\", \"content\":\"%s\", \"username\":\"%s\", \"password\":\"%s\", \"platform\":\"Wii\"}", inputText, username, password);
+                                sprintf(message, "{\"cmd\":\"CHAT\", \"content\":\"%s\", \"platform\":\"Wii\"}", inputText, username, password);
                                 ret = http_post(SERVER_IP, "/api", message);
                                 sprintf(inputText, "");
                                 textPos = 0;
