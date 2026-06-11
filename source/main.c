@@ -31,7 +31,7 @@
     Initial idea by: Virtualle
     Current idea by: mii-man, inspired by Virtualle
     Music by: manti-09
-    Code by: Virtualle
+    Code by: Virtualle and cool guy
     Comments by: Virtualle
     Backend by: Virtualle and Orstando
 
@@ -83,6 +83,8 @@
 #include <wiikeyboard/keyboard.h>
 
 #define SERVER_IP "104.236.25.60"
+#define HTTP_PORT 6767
+#define SOCKET_PORT 3033
 
 
 /*
@@ -93,8 +95,20 @@
 
 */
 
+static int http_response_body(const char* response, char* dest, int dest_size) {
+    const char* body = strstr(response, "\r\n\r\n");
+    if (!body) return -1;
+    body += 4;
+    strncpy(dest, body, dest_size - 1);
+    dest[dest_size - 1] = '\0';
+    int len = strlen(dest);
+    while (len > 0 && (dest[len - 1] == '\n' || dest[len - 1] == '\r' || dest[len - 1] == ' ')) {
+        dest[--len] = '\0';
+    }
+    return 0;
+}
 
-int http_post(const char* host, const char* path, const char* data) {
+int http_post(const char* host, int port, const char* path, const char* data, const char* auth, char* response_out, int response_max) {
     int sock;
     struct sockaddr_in addr;
     char request[1024];
@@ -102,10 +116,10 @@ int http_post(const char* host, const char* path, const char* data) {
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(3072);
+    addr.sin_port = htons(port);
 
     if (!inet_aton(host, &addr.sin_addr)) {
-        return -1; 
+        return -1;
     }
 
     sock = net_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
@@ -116,13 +130,24 @@ int http_post(const char* host, const char* path, const char* data) {
         return -3;
     }
 
-    snprintf(request, sizeof(request),
-        "POST %s HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "Content-Length: %d\r\n"
-        "Content-Type: application/json\r\n"
-        "Connection: close\r\n\r\n%s",
-        path, host, strlen(data), data);
+    if (auth && auth[0]) {
+        snprintf(request, sizeof(request),
+            "POST %s HTTP/1.1\r\n"
+            "Host: %s\r\n"
+            "Content-Length: %d\r\n"
+            "Content-Type: text/plain\r\n"
+            "auth: %s\r\n"
+            "Connection: close\r\n\r\n%s",
+            path, host, (int)strlen(data), auth, data);
+    } else {
+        snprintf(request, sizeof(request),
+            "POST %s HTTP/1.1\r\n"
+            "Host: %s\r\n"
+            "Content-Length: %d\r\n"
+            "Content-Type: text/plain\r\n"
+            "Connection: close\r\n\r\n%s",
+            path, host, (int)strlen(data), data);
+    }
 
     if (net_send(sock, request, strlen(request), 0) < 0) {
         net_close(sock);
@@ -137,6 +162,9 @@ int http_post(const char* host, const char* path, const char* data) {
 
     if (total > 0) {
         printf("Response (%d bytes):\n%.*s\n", total, total, response);
+        if (response_out && response_max > 0) {
+            http_response_body(response, response_out, response_max);
+        }
     }
 
     net_close(sock);
@@ -255,8 +283,38 @@ int shiftActive = 0;
 
 char username[21];
 char password[21];
+char authToken[512] = "";
+char currentRoom[64] = "general";
 
 int scene = 5;
+
+static int parse_auth_token(const char* body) {
+    if (strncmp(body, "ERR_", 4) == 0) {
+        append_message((char*)body);
+        return -1;
+    }
+    strncpy(authToken, body, sizeof(authToken) - 1);
+    authToken[sizeof(authToken) - 1] = '\0';
+    size_t token_len = strlen(authToken);
+    if (token_len > 0 && authToken[token_len - 1] == '|') {
+        authToken[token_len - 1] = '\0';
+    }
+    return authToken[0] ? 0 : -1;
+}
+
+static void append_socket_message(const char* raw) {
+    char user[64];
+    char msg[256];
+    char room[64];
+    char display[512];
+
+    if (sscanf(raw, "%63[^|]|%255[^|]|%63[^|]", user, msg, room) >= 2) {
+        snprintf(display, sizeof(display), "%s: %s", user, msg);
+        append_message(display);
+    } else {
+        append_message((char*)raw);
+    }
+}
 
 bool enteringusername = false;
 bool enteringpassword = false;
@@ -305,15 +363,12 @@ int main() {
     if (sock2 < 0) return -2;
 
     addr2.sin_family = AF_INET;
-    addr2.sin_port = htons(4040);
+    addr2.sin_port = htons(SOCKET_PORT);
 
     if (net_connect(sock2, (struct sockaddr*)&addr2, sizeof(addr2)) < 0) {
         net_close(sock2);
         return -3;
     }
-
-    ret = http_post(SERVER_IP, "/api", "{\"cmd\":\"CONNECT\", \"version\":\"4.3\", \"platform\":\"Wii\"}");
-    if (ret < 0) printf("Connect POST failed: %d\n", ret);
 
     char buffer[613];
 
@@ -340,7 +395,7 @@ int main() {
         ssize_t len = net_recv(sock2, buffer, sizeof(buffer)-1, 0);
         if (len > 0) {
             buffer[len] = '\0';
-            append_message(buffer);
+            append_socket_message(buffer);
         }
     }
 
@@ -358,24 +413,28 @@ int main() {
 
                         if (keys[i].output == '\n') {
                             if (scene == 1) {
-                                char message[300];
-                                sprintf(message, "{\"cmd\":\"CHAT\", \"content\":\"%s\", \"platform\":\"Wii\"}", inputText);
-                                ret = http_post(SERVER_IP, "/api", message);
-                                sprintf(inputText, "");
+                                char payload[300];
+                                char body[256];
+                                snprintf(payload, sizeof(payload), "%s|%s|", inputText, currentRoom);
+                                ret = http_post(SERVER_IP, HTTP_PORT, "/api/chat", payload, authToken, body, sizeof(body));
+                                if (ret == 0 && strncmp(body, "ERR_", 4) == 0) {
+                                    append_message(body);
+                                }
+                                inputText[0] = '\0';
                                 textPos = 0;
                             }
-                            if (scene == 2 & enteringusername || (scene == 3 & enteringusername)) {
-                                sprintf(username, "%s", inputText);
+                            if (scene == 2 && enteringusername || (scene == 3 && enteringusername)) {
+                                snprintf(username, sizeof(username), "%s", inputText);
                                 enteringusername = false;
                                 showkeyboard = false;
-                                sprintf(inputText, "");
+                                inputText[0] = '\0';
                                 textPos = 0;
                             }
-                            if (scene == 2 & enteringpassword || (scene == 3 & enteringpassword)) {
-                                sprintf(password, "%s", inputText);
+                            if (scene == 2 && enteringpassword || (scene == 3 && enteringpassword)) {
+                                snprintf(password, sizeof(password), "%s", inputText);
                                 enteringpassword = false;
                                 showkeyboard = false;
-                                sprintf(inputText, "");
+                                inputText[0] = '\0';
                                 textPos = 0;
                             }
                         }
@@ -442,10 +501,13 @@ int main() {
                     }
                 }
                 if (px >= 400 - 20 && px <= 400 - 20 + 250 && py >= 400 - 40 && py <= 400 - 40 + 100) {
-                    char sender[300];
-                    sprintf(sender, "{\"cmd\":\"LOGINACC\", \"username\":\"%s\", \"password\":\"%s\", \"platform\":\"Wii\"}", username, password);
-                    ret = http_post(SERVER_IP, "/api", sender);
-                    scene = 1;
+                    char payload[64];
+                    char body[512];
+                    snprintf(payload, sizeof(payload), "%s|%s|", username, password);
+                    ret = http_post(SERVER_IP, HTTP_PORT, "/api/login", payload, NULL, body, sizeof(body));
+                    if (ret == 0 && parse_auth_token(body) == 0) {
+                        scene = 1;
+                    }
                 }
             }
             GRRLIB_Rectangle(200, 400, 250, 100, 0x888888FF, 1);
@@ -476,10 +538,13 @@ int main() {
                     }
                 }
                 if (px >= 400 - 20 && px <= 400 - 20 + 250 && py >= 400 - 40 && py <= 400 - 40 + 100) {
-                    char sender[300];
-                    sprintf(sender, "{\"cmd\":\"MAKEACC\", \"username\":\"%s\", \"password\":\"%s\", \"platform\":\"Wii\"}", username, password);
-                    ret = http_post(SERVER_IP, "/api", sender);
-                    scene = 5;
+                    char payload[64];
+                    char body[512];
+                    snprintf(payload, sizeof(payload), "%s|%s|", username, password);
+                    ret = http_post(SERVER_IP, HTTP_PORT, "/api/signup", payload, NULL, body, sizeof(body));
+                    if (ret == 0 && parse_auth_token(body) == 0) {
+                        scene = 1;
+                    }
                 }
             }
             GRRLIB_Rectangle(200, 400, 250, 100, 0x888888FF, 1);
@@ -492,6 +557,7 @@ int main() {
 
         if (scene == 1) {
             PrintMTTF(20, chatscroll, font, chat, 24, 0x000000FF, 4);
+            GRRLIB_PrintfTTF(20, 450, font, currentRoom, 20, 0x000000FF);
         }
 
         if (showkeyboard) {
@@ -514,7 +580,7 @@ int main() {
         GRRLIB_PrintfTTF(500, 20, font, "AuroraWii", 24, 0x000000FF);
 
         if (pressed & WPAD_BUTTON_B) {
-            PrintMTTF(200, 20, font, "key board am i right\n", 24, 0x000000FF, 4);
+            PrintMTTF(200, 20, font, "Loading keyboard...\n", 24, 0x000000FF, 4); // Really, Virtualle? In a retail build? At least make it professional (TM)
         }
 
         if (scene == 1) {
@@ -554,7 +620,7 @@ int main() {
 
     exit:
 
-        net_close(sock2);
+        net_close(sock2); // socks
         GRRLIB_FreeTTF(font);
         GRRLIB_Exit();
         return 0;
