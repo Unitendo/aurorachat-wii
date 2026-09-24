@@ -13,4 +13,4 @@ Requirements:
 
 - GRRLIB
 
-Run make afterwards.
+Then run `make`
